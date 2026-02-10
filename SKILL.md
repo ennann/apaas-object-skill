@@ -1,6 +1,6 @@
 ---
 name: apaas-object-skill
-description: Use when creating, updating, or deleting aPaaS data objects (schemas/tables), managing field definitions, or troubleshooting schema API errors like type mismatches, missing fields, or dependency ordering issues.
+description: Use when managing aPaaS platform data objects via the apaas-oapi-client Node SDK (client.schema.create/update/delete).
 ---
 
 # aPaaS 数据对象管理
@@ -88,7 +88,22 @@ new apaas.Client({ auth: { clientId: '...' } });  // 鉴权失败
 | `client.schema.update({ objects })` | 批量更新对象（添加/修改/删除字段） |
 | `client.schema.delete({ api_names })` | 批量删除数据对象 |
 
-> **批量上限**：`schema.create / update / delete` 每次调用最多 **10 个对象**，超过时需分批调用。
+> **批量上限**：`schema.create / update / delete` 每次调用最多 **10 个对象**，超过时需分批调用：
+>
+> ```typescript
+> // 通用分批执行：将 items 按 batchSize 拆分，逐批调用 fn
+> async function batchExecute<T>(items: T[], batchSize: number, fn: (batch: T[]) => Promise<any>) {
+>     for (let i = 0; i < items.length; i += batchSize) {
+>         const batch = items.slice(i, i + batchSize);
+>         const result = await fn(batch);
+>         // 检查 result（见"响应验证"章节）
+>     }
+> }
+>
+> // 示例：创建 25 个空壳对象
+> const allObjects = [/* ... 25 个对象定义 ... */];
+> await batchExecute(allObjects, 10, (batch) => client.schema.create({ objects: batch }));
+> ```
 
 | `client.object.listWithIterator()` | 列出所有数据对象 |
 | `client.object.metadata.fields({ object_name })` | 获取对象所有字段元数据 |
@@ -197,7 +212,7 @@ metadata 返回的类型名和 schema 接口接受的类型名**不一致**，�
 | `decimal` | `decimal` | 同名 |
 | `multilingual` | `multilingual` | 同名 |
 
-**机器可读映射源**：SDK 包中 `field-schema-rules.ts` 导出的 `SCHEMA_TYPE_BY_METADATA_TYPE` 和 `FIELD_SCHEMA_RULES`。
+**机器可读映射源**：本仓库 `references/field-schema-rules.ts` 导出的 `SCHEMA_TYPE_BY_METADATA_TYPE` 和 `FIELD_SCHEMA_RULES`。
 
 ## 各字段类型 settings 模板（必须遵守）
 
@@ -418,6 +433,54 @@ console.log(`已删除对象: ${apiNames.join(', ')}`);
 - `lookup_multi`（`multiple: true`）**不能**作为 reference_field 的引导字段
 - 同一批 `schema.update` 中，add 的执行顺序不保证，不要在同一批里 add lookup 又 add 依赖它的 reference_field
 
+## 失败恢复与幂等重跑
+
+多阶段创建过程中，任意阶段都可能失败。以下是各阶段失败后的状态和恢复策略：
+
+### 各阶段失败后的状态
+
+| 失败点 | 已完成的状态 | 恢复策略 |
+|--------|-------------|---------|
+| 阶段 1a 失败 | 部分空壳对象可能已创建 | 重跑 1a，已存在的对象会报 `k_ec_000015`（含 "exist"），安全忽略 |
+| 阶段 1b 失败 | 空壳对象存在，部分字段可能已添加 | 重跑 1b，已存在的字段会报错，可通过先查询 metadata 跳过已有字段 |
+| 阶段 2 失败 | 基础字段已就位，部分 lookup 可能已添加 | 同上，查询后跳过已有 lookup |
+| 阶段 3 失败 | lookup 已就位，部分 reference_field 可能已添加 | 同上，查询后跳过已有 reference_field |
+
+### 幂等重跑模式
+
+```typescript
+// 查询已有字段，跳过已存在的
+async function addFieldsIdempotent(objectName: string, fieldsToAdd: any[]) {
+    const existing = await client.object.metadata.fields({ object_name: objectName });
+    const existingNames = new Set(
+        (existing.data?.fields || []).map((f: any) => f.apiName)
+    );
+    const newFields = fieldsToAdd.filter(f => !existingNames.has(f.api_name));
+    if (newFields.length === 0) {
+        console.log(`  [SKIP] ${objectName}: 所有字段已存在`);
+        return;
+    }
+    const result = await client.schema.update({
+        objects: [{ api_name: objectName, fields: newFields }]
+    });
+    checkResponse(result, `addFields(${objectName})`);
+}
+```
+
+### 部分成功的处理
+
+`schema.update` 可能在一批 10 个对象中只有部分成功。通过 `data.items[].status.code` 逐项检查，只重跑失败的对象：
+
+```typescript
+const result = await client.schema.update({ objects: batch });
+const failed = (result.data?.items || [])
+    .filter((item: any) => item.status?.code !== '0')
+    .map((item: any) => item.api_name);
+if (failed.length > 0) {
+    console.warn(`部分失败: ${failed.join(', ')}，可针对这些对象重跑`);
+}
+```
+
 ## 常见错误与对策
 
 | 错误 | 原因 | 修复 |
@@ -499,16 +562,16 @@ npx ts-node scripts/run.ts
 
 ```
 apaas-object-skill/
-  SKILL.md                          # 主文档
+  SKILL.md                          # 主文档（Claude 读取此文件）
   LICENSE.txt                       # ISC 协议
   references/
-    FIELD_SCHEMA_RULES.md           # 字段类型映射、依赖规则、选项颜色、batch_update 规则
+    FIELD_SCHEMA_RULES.md           # 字段类型映射、依赖规则（人读版）
+    field-schema-rules.ts           # 字段类型映射、依赖规则（机器可读版，TypeScript）
   scripts/
-    run.ts                          # 执行脚本（凭据加载、client 初始化、验证工具）
+    run.ts                          # 执行脚本（凭据加载、client 初始化、工具函数）
     .env.example                    # 凭据配置模板
 ```
 
 ## 其他参考
 
-- 字段规则 TypeScript 定义（机器可读源）：SDK 包中 `field-schema-rules.ts`
-- SDK 仓库示例：`examples/schema-operations.ts`（基础 CRUD）、`examples/schema-reference-fields.ts`（关联字段）
+- 字段规则 TypeScript 定义（机器可读源）：本仓库 `references/field-schema-rules.ts`

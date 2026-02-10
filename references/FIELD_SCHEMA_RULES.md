@@ -88,6 +88,4 @@ Allowed option colors:
 
 ## Canonical machine-readable source
 
-SDK 包 `apaas-oapi-client` 中的 `src/field-schema-rules.ts` 为机器可读源。
-
-安装 SDK 后可在 `node_modules/apaas-oapi-client/src/field-schema-rules.ts` 查看。
+本仓库 `references/field-schema-rules.ts` 为机器可读源，导出 `SCHEMA_TYPE_BY_METADATA_TYPE`、`FIELD_SCHEMA_RULES`、`OPTION_COLOR_LIST`、`BATCH_UPDATE_REQUIREMENTS` 等常量。

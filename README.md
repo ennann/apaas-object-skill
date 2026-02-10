@@ -46,19 +46,37 @@ const client = new apaas.Client({
 await client.init();
 ```
 
-### 2. 创建数据对象
+### 2. 创建数据对象（两步走）
+
+> **注意**：`schema.create` 会静默忽略 `fields` 参数，必须先创建空壳，再用 `update` 添加字段。
 
 ```typescript
+// 步骤 1：创建空壳对象（不传 fields）
 await client.schema.create({
     objects: [{
         api_name: 'product',
         label: { zh_cn: '产品', en_us: 'Product' },
-        settings: { display_name: 'name', allow_search_fields: ['_id', 'name'], search_layout: ['name'] },
+        settings: { display_name: '_id', allow_search_fields: ['_id'], search_layout: [] }
+    }]
+});
+
+// 步骤 2：用 update + operator:'add' 添加字段
+await client.schema.update({
+    objects: [{
+        api_name: 'product',
         fields: [
-            { api_name: 'name', label: { zh_cn: '名称', en_us: 'Name' },
-              type: { name: 'text', settings: { required: true, max_length: 200 } },
+            { operator: 'add', api_name: 'name', label: { zh_cn: '名称', en_us: 'Name' },
+              type: { name: 'text', settings: { required: true, unique: false, case_sensitive: false, multiline: false, max_length: 200 } },
               encrypt_type: 'none' }
         ]
+    }]
+});
+
+// 步骤 3（可选）：更新 display_name 指向实际字段
+await client.schema.update({
+    objects: [{
+        api_name: 'product',
+        settings: { display_name: 'name', allow_search_fields: ['_id', 'name'], search_layout: ['name'] }
     }]
 });
 ```
@@ -77,14 +95,15 @@ npx ts-node scripts/run.ts
 
 ```
 apaas-object-skill/
-  SKILL.md                  # Skill 主文档（Claude 读取此文件）
-  LICENSE.txt               # ISC 协议
-  package.json              # 依赖声明
+  SKILL.md                          # Skill 主文档（Claude 读取此文件）
+  LICENSE.txt                       # ISC 协议
+  package.json                      # 依赖声明
   references/
-    FIELD_SCHEMA_RULES.md   # 字段类型映射和规则参考
+    FIELD_SCHEMA_RULES.md           # 字段类型映射和规则参考（人读版）
+    field-schema-rules.ts           # 字段类型映射和规则参考（机器可读版）
   scripts/
-    run.ts                  # 执行脚本（含 client 初始化和验证工具）
-    .env.example            # 凭据配置模板
+    run.ts                          # 执行脚本（含 client 初始化和工具函数）
+    .env.example                    # 凭据配置模板
 ```
 
 ## 关键注意事项

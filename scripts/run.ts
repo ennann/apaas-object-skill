@@ -64,18 +64,72 @@ const client = new apaas.Client({
     namespace
 });
 
-// ── 验证工具函数 ──────────────────────────────────────────
+// ── 响应验证（三层检查） ──────────────────────────────────
+function checkResponse(result: any, context: string): boolean {
+    // 第 1 层：请求级错误
+    if (result.code !== '0') {
+        console.error(`[FAIL] ${context}: 请求失败 code=${result.code}, msg=${result.msg}`);
+        return false;
+    }
+    // 第 2 层：静默失败（最危险）
+    if (result.code === '0' && result.data === null) {
+        console.error(`[FAIL] ${context}: 静默失败 — code=0 但 data=null。检查字段 settings 是否完整（text 必须有 multiline，auto_number 必须有 generation_method）`);
+        return false;
+    }
+    // 第 3 层：逐项检查
+    let allOk = true;
+    for (const item of result.data?.items || []) {
+        if (item.status?.code && item.status.code !== '0') {
+            console.error(`[FAIL] ${context}: 对象 ${item.api_name} 失败 — ${item.status.message}`);
+            allOk = false;
+        }
+    }
+    if (allOk) {
+        console.log(`[OK] ${context}`);
+    }
+    return allOk;
+}
+
+// ── 批量拆分执行（每批最多 10 个对象） ─────────────────────
+async function batchExecute<T>(
+    items: T[],
+    batchSize: number,
+    fn: (batch: T[]) => Promise<any>,
+    context: string
+): Promise<boolean> {
+    let allOk = true;
+    for (let i = 0; i < items.length; i += batchSize) {
+        const batch = items.slice(i, i + batchSize);
+        const batchNum = Math.floor(i / batchSize) + 1;
+        const totalBatches = Math.ceil(items.length / batchSize);
+        const label = `${context} [批次 ${batchNum}/${totalBatches}]`;
+        const result = await fn(batch);
+        if (!checkResponse(result, label)) {
+            allOk = false;
+        }
+    }
+    return allOk;
+}
+
+// ── 验证对象及字段 ────────────────────────────────────────
 async function verifyObjects(objectNames: string[]) {
     console.log('\n── 验证对象 ──');
 
-    // 列出所有对象
     const allObjects = await client.object.listWithIterator();
     for (const name of objectNames) {
         const found = allObjects.items?.find((o: any) => o.apiName === name);
-        if (found) {
-            console.log(`  [OK] ${name} 存在`);
-        } else {
+        if (!found) {
             console.log(`  [!!] ${name} 不存在`);
+            continue;
+        }
+        // 检查字段数量
+        const fieldResult = await client.object.metadata.fields({ object_name: name });
+        const fields = fieldResult.data?.fields || [];
+        const customFields = fields.filter((f: any) => !f.apiName.startsWith('_'));
+        console.log(`  [OK] ${name} 存在（${customFields.length} 个自定义字段）`);
+        for (const f of customFields) {
+            const typeName = f.type?.name || f.type || '?';
+            console.log(`       - ${f.apiName} (${typeName})`);
         }
     }
 
@@ -112,4 +166,4 @@ main().catch(err => {
     process.exit(1);
 });
 
-export { client, verifyObjects };
+export { client, checkResponse, batchExecute, verifyObjects };
