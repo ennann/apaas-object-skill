@@ -89,14 +89,17 @@ apaas-object-skill/
 
 ## 关键注意事项
 
-- **字段类型映射**：metadata 返回的类型名和 schema 接口接受的不一致（如 `number` 要用 `float`，`option` 要用 `enum`），详见 SKILL.md
+- **SDK 版本**：必须 >= 0.1.37，低版本没有 `schema` 模块
+- **create 不创建字段**：`schema.create` 会**静默忽略** `fields` 参数，必须用两步走（先 create 空壳，再 update 添加字段）
+- **字段类型映射**：metadata 返回的类型名和 schema 接口接受的不一致（如 `number` 要用 `float`，`option` 要用 `enum`）
 - **系统对象只读**：`_user`、`_department` 以及所有 `_` 开头的字段不可修改/删除
-- **循环依赖处理**：多对象互相 lookup 时，需分三阶段创建（空壳 → 补 lookup → 补 reference_field）
+- **多对象创建流程**：空壳 → 基础字段 → lookup → reference_field，始终遵循此顺序
 - **响应双层结构**：顶层 `code="0"` 仅表示请求格式正确，实际结果在 `data.items[].status` 中
+- **`k_ec_000015`**：可能是"重复创建"而非参数错误，检查错误信息中是否含 "exist"
 
 ## 依赖
 
-- [apaas-oapi-client](https://www.npmjs.com/package/apaas-oapi-client) - aPaaS Node SDK
+- [apaas-oapi-client](https://www.npmjs.com/package/apaas-oapi-client) >= 0.1.37 - aPaaS Node SDK
 
 ## 协议
 

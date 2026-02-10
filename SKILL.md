@@ -12,7 +12,7 @@ description: Use when creating, updating, or deleting aPaaS data objects (schema
 使用此 skill 前，必须确保以下环境已就绪：
 
 1. **安装 Node.js**（>= 16）
-2. **安装 SDK**：`npm install apaas-oapi-client`
+2. **安装 SDK**：`npm install apaas-oapi-client@^0.1.37`（`schema` 模块从 0.1.37 开始提供，低版本会报 `Cannot read properties of undefined`）
 3. **获取凭据**（在 aPaaS 平台的应用管理中获取）：
    - Client ID（格式：`c_` 开头，如 `c_a4dd955086ec45a882b9`）
    - Client Secret（格式：32 位十六进制，如 `a62fc785b97a4847810a4f319ccbdb5e`）
@@ -91,29 +91,52 @@ new apaas.Client({ auth: { clientId: '...' } });  // 鉴权失败
 | `client.object.metadata.fields({ object_name })` | 获取对象所有字段元数据 |
 | `client.object.metadata.export2markdown()` | 导出对象元数据为 Markdown |
 
-## 创建对象
+## 创建对象（两步走，必须遵守）
+
+**`schema.create` 会静默忽略 `fields` 参数** — 即使传了字段定义，返回 `code: 0`，但实际只创建空壳对象，字段不会被创建。
+
+必须采用**两步走**：先 `create` 空壳，再 `update` 添加字段。
 
 ```typescript
+// 步骤 1：创建空壳对象（不传 fields，或传了也会被忽略）
 await client.schema.create({
     objects: [{
         api_name: 'product',
         label: { zh_cn: '产品', en_us: 'Product' },
         settings: {
-            display_name: 'name',           // 展示名称字段（不能用 _name）
+            display_name: '_id',  // 暂时指向 _id，后续字段就位后再更新
+            allow_search_fields: ['_id'],
+            search_layout: []
+        }
+    }]
+});
+
+// 步骤 2：用 update + operator:'add' 添加字段
+await client.schema.update({
+    objects: [{
+        api_name: 'product',
+        fields: [
+            { operator: 'add', api_name: 'code',
+              label: { zh_cn: '产品编号', en_us: 'Code' },
+              type: { name: 'text', settings: { required: true, unique: true, case_sensitive: false, multiline: false, max_length: 50 } },
+              encrypt_type: 'none' },
+            { operator: 'add', api_name: 'name',
+              label: { zh_cn: '产品名称', en_us: 'Name' },
+              type: { name: 'text', settings: { required: true, max_length: 200 } },
+              encrypt_type: 'none' }
+        ]
+    }]
+});
+
+// 步骤 3（可选）：更新 settings，将 display_name 指向实际字段
+await client.schema.update({
+    objects: [{
+        api_name: 'product',
+        settings: {
+            display_name: 'name',           // 不能用 _name
             allow_search_fields: ['_id', 'code', 'name'],  // 不能包含 _name
             search_layout: ['code', 'name']
-        },
-        fields: [
-            {
-                api_name: 'code',
-                label: { zh_cn: '产品编号', en_us: 'Code' },
-                type: {
-                    name: 'text',       // 必须用 schema type，不是 metadata type
-                    settings: { required: true, unique: true, case_sensitive: false, multiline: false, max_length: 50 }
-                },
-                encrypt_type: 'none'
-            }
-        ]
+        }
     }]
 });
 ```
@@ -212,30 +235,34 @@ lookup 字段要求目标对象已存在，互相引用时直接创建必然失�
 
 ### 解决：三阶段创建法
 
-**阶段 1 — 创建空壳对象**：所有对象只带基础字段（text, bigint, decimal, enum, date 等不依赖其他对象的字段），不带 lookup / reference_field。
+**阶段 1a — 创建空壳对象**：所有对象只建壳子，不传 fields（传了也会被忽略）。`display_name` 暂时指向 `_id`。
 
 ```typescript
-// 阶段 1：先创建所有对象的空壳
+// 阶段 1a：创建所有空壳
 await client.schema.create({
     objects: [
-        {
-            api_name: 'customer',
-            label: { zh_cn: '客户', en_us: 'Customer' },
-            settings: { display_name: 'name', allow_search_fields: ['_id', 'name'], search_layout: ['name'] },
-            fields: [
-                { api_name: 'name', label: { zh_cn: '客户名', en_us: 'Name' },
-                  type: { name: 'text', settings: { required: true, max_length: 200 } }, encrypt_type: 'none' }
-            ]
-        },
-        {
-            api_name: 'order',
-            label: { zh_cn: '订单', en_us: 'Order' },
-            settings: { display_name: 'order_no', allow_search_fields: ['_id', 'order_no'], search_layout: ['order_no'] },
-            fields: [
-                { api_name: 'order_no', label: { zh_cn: '订单号', en_us: 'Order No' },
-                  type: { name: 'text', settings: { required: true, unique: true, max_length: 50 } }, encrypt_type: 'none' }
-            ]
-        }
+        { api_name: 'customer', label: { zh_cn: '客户', en_us: 'Customer' },
+          settings: { display_name: '_id' } },
+        { api_name: 'order', label: { zh_cn: '订单', en_us: 'Order' },
+          settings: { display_name: '_id' } }
+    ]
+});
+```
+
+**阶段 1b — 添加基础字段**：用 `schema.update` + `operator: 'add'` 给每个对象补上基础字段（text, bigint, decimal, enum 等不依赖其他对象的字段）。
+
+```typescript
+// 阶段 1b：补基础字段
+await client.schema.update({
+    objects: [
+        { api_name: 'customer', fields: [
+            { operator: 'add', api_name: 'name', label: { zh_cn: '客户名', en_us: 'Name' },
+              type: { name: 'text', settings: { required: true, max_length: 200 } }, encrypt_type: 'none' }
+        ]},
+        { api_name: 'order', fields: [
+            { operator: 'add', api_name: 'order_no', label: { zh_cn: '订单号', en_us: 'Order No' },
+              type: { name: 'text', settings: { required: true, unique: true, max_length: 50 } }, encrypt_type: 'none' }
+        ]}
     ]
 });
 ```
@@ -290,11 +317,12 @@ await client.schema.update({
 
 1. **列出所有对象和字段**，标记哪些字段是 lookup / lookup_multi / reference_field
 2. **画出依赖关系**：lookup 的 `referenced_object_api_name` 指向谁
-3. **分类字段**：
-   - 基础字段（text, bigint, float, date, datetime, enum, boolean, attachment, auto_number, richText, phone, avatar, email, region, decimal, multilingual）→ 阶段 1
-   - lookup / lookup_multi → 阶段 2
-   - reference_field → 阶段 3
-4. **如果无循环依赖**（如 A→B→C 单向链），可以按拓扑序在阶段 1 直接带上 lookup，但**推荐始终用三阶段法**，更安全且一致
+3. **分类到各阶段**：
+   - 阶段 1a：`schema.create` 创建所有空壳对象（不传 fields）
+   - 阶段 1b：`schema.update` 添加基础字段（text, bigint, float, date, datetime, enum, boolean, attachment, auto_number, richText, phone, avatar, email, region, decimal, multilingual）
+   - 阶段 2：`schema.update` 添加 lookup / lookup_multi
+   - 阶段 3：`schema.update` 添加 reference_field
+4. **始终用此流程**，即使没有循环依赖也不要尝试在 `create` 中传 fields
 
 ### 删除顺序（逆向）
 
@@ -315,10 +343,13 @@ await client.schema.update({
 | 错误 | 原因 | 修复 |
 |---|---|---|
 | `k_ec_000015 field type is required` | `replace` 时只传了 label 没传 type | replace 必须带完整 type（name + settings） |
+| `k_ec_000015` + 含 "exist" | 对象已存在，重复创建 | 先查询是否存在，或安全忽略此错误 |
+| `create` 返回成功但字段为空 | `schema.create` 静默忽略 fields | **必须用两步走**：先 create 空壳，再 update 添加字段 |
 | 创建字段类型不识别 | 用了 metadata type（如 `number`） | 用 schema type（`float`） |
-| `display_name` 报错 | 使用了 `_name` | 改用自定义字段名如 `name` |
+| `display_name` 报错 | 使用了 `_name`，或指向不存在的字段 | 创建空壳时先用 `_id`，字段就位后再更新 |
 | lookup 创建失败 | 目标对象不存在 | 先创建目标对象 |
 | reference_field 创建失败 | 引导 lookup 不存在或是 multi | 先创建 `multiple: false` 的 lookup |
+| reference_field `field not found` | lookup 刚创建，系统索引延迟；或目标字段类型不支持引用（如 `avatar`） | 批量迁移时对 reference_field 失败做容错（打印错误但不中断），必要时加延迟重试 |
 
 ## 响应验证
 
