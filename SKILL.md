@@ -125,7 +125,7 @@ await client.schema.update({
               encrypt_type: 'none' },
             { operator: 'add', api_name: 'name',
               label: { zh_cn: '产品名称', en_us: 'Name' },
-              type: { name: 'text', settings: { required: true, max_length: 200 } },
+              type: { name: 'text', settings: { required: true, unique: false, case_sensitive: false, multiline: false, max_length: 200 } },
               encrypt_type: 'none' }
         ]
     }]
@@ -155,11 +155,11 @@ await client.schema.update({
         fields: [
             // 添加字段
             { operator: 'add', api_name: 'desc', label: { zh_cn: '描述', en_us: 'Desc' },
-              type: { name: 'text', settings: { multiline: true, max_length: 1000 } }, encrypt_type: 'none' },
+              type: { name: 'text', settings: { required: false, unique: false, case_sensitive: false, multiline: true, max_length: 1000 } }, encrypt_type: 'none' },
             // 修改字段（必须带完整 type，只改 label 会报错）
             { operator: 'replace', api_name: 'code',
               label: { zh_cn: '编号', en_us: 'Code' },
-              type: { name: 'text', settings: { required: true, unique: true, max_length: 100 } } },
+              type: { name: 'text', settings: { required: true, unique: true, case_sensitive: false, multiline: false, max_length: 100 } } },
             // 删除字段（只需 api_name）
             { operator: 'remove', api_name: 'desc' }
         ]
@@ -199,27 +199,35 @@ metadata 返回的类型名和 schema 接口接受的类型名**不一致**，�
 
 **机器可读映射源**：SDK 包中 `field-schema-rules.ts` 导出的 `SCHEMA_TYPE_BY_METADATA_TYPE` 和 `FIELD_SCHEMA_RULES`。
 
-## 各字段类型 settings 速查
+## 各字段类型 settings 模板（必须遵守）
 
-| Schema Type | 关键 settings |
+> **致命陷阱**：某些 settings 字段**看似可选实则必填**。缺失时 API 返回 `code: "0"` + `data: null`，看似成功但**字段不会被创建**。更危险的是，同一批次中一个字段缺少必填 settings，会导致**整批所有字段都静默失败**。
+>
+> 下表中用 ⚠️ 标记的 settings 为**必填项**，不传会导致静默失败。始终使用下方完整模板，不要省略任何字段。
+
+| Schema Type | 完整 settings 模板 |
 |---|---|
-| `text` | `required, unique, case_sensitive, multiline, max_length` |
-| `float` | `required, unique, display_as_percentage, decimal_places_number` |
-| `bigint` | `required, unique` |
-| `date` / `datetime` | `required` |
-| `enum` | `required, multiple, option_source("custom"), options[{label, api_name, color, active}]` |
-| `boolean` | `default_value, description_if_true{zh_cn,en_us}, description_if_false{zh_cn,en_us}` |
-| `lookup` | `required, multiple, referenced_object_api_name, display_as_tree, display_style` |
-| `reference_field` | `current_lookup_field_api_name, target_reference_field_api_name` |
-| `attachment` | `required, any_type, max_uploaded_num, mime_types[]` |
-| `auto_number` | `generation_method("random"), digits, prefix, suffix, start_at` |
-| `richText` | `required, max_length` |
-| `phone` | `required, unique` |
-| `avatar` | `display_style("square")` |
-| `email` | `required, unique` |
-| `region` | `required, multiple, has_level_strict, strict_level` |
-| `decimal` | `required, unique, display_as_percentage, decimal_places` |
-| `multilingual` | `required, unique, case_sensitive, multiline, max_length` |
+| `text` | `{ required: false, unique: false, case_sensitive: false,` ⚠️ `multiline: false, max_length: 255 }` |
+| `float` | `{ required: false, unique: false, display_as_percentage: false, decimal_places_number: 2 }` |
+| `bigint` | `{ required: false, unique: false }` |
+| `date` / `datetime` | `{ required: false }` |
+| `enum` | `{ required: false, multiple: false, option_source: "custom", options: [{label, api_name, color, active}] }` |
+| `boolean` | `{ default_value: true, description_if_true: {zh_cn, en_us}, description_if_false: {zh_cn, en_us} }` |
+| `lookup` | `{ required: false, multiple: false, referenced_object_api_name: "target" }` |
+| `reference_field` | `{ current_lookup_field_api_name: "...", target_reference_field_api_name: "..." }` |
+| `attachment` | `{ required: false, any_type: true, max_uploaded_num: 10, mime_types: [] }` |
+| `auto_number` | `{` ⚠️ `generation_method: "random", digits: 1, prefix: "", suffix: "", start_at: "1" }` |
+| `richText` | `{ required: false, max_length: 1000 }` |
+| `phone` | `{ required: false, unique: false }` |
+| `avatar` | `{ display_style: "square" }` |
+| `email` | `{ required: false, unique: false }` |
+| `region` | `{ required: false, multiple: false, has_level_strict: true, strict_level: 4 }` |
+| `decimal` | `{ required: false, unique: false, display_as_percentage: false, decimal_places: 2 }` |
+| `multilingual` | `{ required: false, unique: false, case_sensitive: false,` ⚠️ `multiline: false, max_length: 1000 }` |
+
+**已确认的必填 settings**（缺失 = 静默失败）：
+- **`text` / `multilingual`**：`multiline` 必须显式传 `true` 或 `false`
+- **`auto_number`**：`generation_method` 必须传（如 `"random"`）
 
 **enum 选项颜色**：`blue, cyan, green, yellow, orange, red, magenta, purple, blueMagenta, grey`
 
@@ -260,11 +268,11 @@ await client.schema.update({
     objects: [
         { api_name: 'customer', fields: [
             { operator: 'add', api_name: 'name', label: { zh_cn: '客户名', en_us: 'Name' },
-              type: { name: 'text', settings: { required: true, max_length: 200 } }, encrypt_type: 'none' }
+              type: { name: 'text', settings: { required: true, unique: false, case_sensitive: false, multiline: false, max_length: 200 } }, encrypt_type: 'none' }
         ]},
         { api_name: 'order', fields: [
             { operator: 'add', api_name: 'order_no', label: { zh_cn: '订单号', en_us: 'Order No' },
-              type: { name: 'text', settings: { required: true, unique: true, max_length: 50 } }, encrypt_type: 'none' }
+              type: { name: 'text', settings: { required: true, unique: true, case_sensitive: false, multiline: false, max_length: 50 } }, encrypt_type: 'none' }
         ]}
     ]
 });
@@ -355,13 +363,13 @@ const referenceFields: { object: string; field: string }[] = [];
 const lookupFields: { object: string; field: string }[] = [];
 
 for (const obj of customObjects) {
-    const fields = await client.object.metadata.fields({ object_name: obj.apiName });
-    for (const field of fields.items || []) {
+    const result = await client.object.metadata.fields({ object_name: obj.apiName });
+    for (const field of result.data?.fields || []) {
         // 跳过系统字段（_ 开头）
         if (field.apiName.startsWith('_')) continue;
-        if (field.type === 'referenceField') {
+        if (field.type?.name === 'referenceField' || field.type === 'referenceField') {
             referenceFields.push({ object: obj.apiName, field: field.apiName });
-        } else if (field.type === 'lookup') {
+        } else if (field.type?.name === 'lookup' || field.type === 'lookup') {
             lookupFields.push({ object: obj.apiName, field: field.apiName });
         }
     }
@@ -414,6 +422,8 @@ console.log(`已删除对象: ${apiNames.join(', ')}`);
 
 | 错误 | 原因 | 修复 |
 |---|---|---|
+| **`update` 返回 `code: "0"` + `data: null`** | **⚠️ 静默失败**：字段 settings 缺少必填项（如 text 缺 `multiline`，auto_number 缺 `generation_method`），或同一批次中某个字段有此问题导致整批失败 | **始终使用 settings 模板中的完整字段**。检查方法：成功时返回 `data.items`，返回 `data: null` 即为失败 |
+| `invalid generation_method value` | auto_number 字段未传 `generation_method` | 必须传 `generation_method: "random"` |
 | `k_ec_000015 field type is required` | `replace` 时只传了 label 没传 type | replace 必须带完整 type（name + settings） |
 | `k_ec_000015` + 含 "exist" | 对象已存在，重复创建 | 先查询是否存在，或安全忽略此错误 |
 | `create` 返回成功但字段为空 | `schema.create` 静默忽略 fields | **必须用两步走**：先 create 空壳，再 update 添加字段 |
@@ -425,18 +435,26 @@ console.log(`已删除对象: ${apiNames.join(', ')}`);
 
 ## 响应验证
 
-响应是**双层结构**：
+响应有**三种状态**，必须全部检查：
 
 ```typescript
-const result = await client.schema.create({ objects: [...] });
+const result = await client.schema.update({ objects: [...] });
 
-// 顶层 code="0" 只表示请求格式正确
-if (result.code !== '0') { /* 请求级错误 */ }
+// 1. 顶层 code≠"0"：请求级错误（参数格式问题）
+if (result.code !== '0') {
+    console.error('请求失败:', result.msg);
+}
 
-// 真正的状态在 data.items 中
+// 2. ⚠️ code="0" 但 data=null：静默失败（字段 settings 缺必填项）
+// 这是最危险的情况！看起来成功，但字段没有被创建。
+if (result.code === '0' && result.data === null) {
+    console.error('⚠️ 静默失败：code=0 但 data=null，字段可能未创建。检查 settings 是否完整（text 必须有 multiline，auto_number 必须有 generation_method）');
+}
+
+// 3. data.items 存在：逐项检查
 for (const item of result.data?.items || []) {
-    if (item.status?.code !== '0') {
-        console.error(`对象 ${item.api_name} 失败:`, item.status);
+    if (item.status?.code && item.status.code !== '0') {
+        console.error(`对象 ${item.api_name} 失败:`, item.status.message);
     }
 }
 ```
@@ -450,8 +468,9 @@ for (const item of result.data?.items || []) {
 const objects = await client.object.listWithIterator();
 const found = objects.items.find(o => o.apiName === 'product');
 
-// 2. 获取字段元数据，验证字段定义
-const fields = await client.object.metadata.fields({ object_name: 'product' });
+// 2. 获取字段元数据，验证字段定义（字段在 result.data.fields 中）
+const fieldResult = await client.object.metadata.fields({ object_name: 'product' });
+const fields = fieldResult.data?.fields || [];
 
 // 3. 导出 Markdown，便于人工审查
 const md = await client.object.metadata.export2markdown({ object_names: ['product'] });

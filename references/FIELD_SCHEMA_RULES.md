@@ -18,6 +18,16 @@ Use this mapping when creating fields.
   - `text_multiline`
   - `lookup_multi`
 
+## ⚠️ Critical: Silent Failure with Missing Settings
+
+When required settings are omitted, the API returns `code: "0"` with `data: null` — **it looks like success but the field is NOT created**. Worse, one bad field in a batch causes the ENTIRE batch to silently fail.
+
+**Confirmed required settings:**
+- `text` / `multilingual`: **`multiline`** must be explicitly set to `true` or `false`
+- `auto_number`: **`generation_method`** must be set (e.g., `"random"`)
+
+**How to detect:** A successful update returns `data.items` array. If `data` is `null`, the operation silently failed.
+
 ## Type Mapping (metadata -> create)
 
 | Metadata Type | Create Type | Notes |
