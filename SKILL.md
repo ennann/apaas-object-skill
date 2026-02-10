@@ -332,6 +332,75 @@ await client.schema.update({
 2. **再删 lookup / lookup_multi**（依赖目标对象）
 3. **最后删对象本身**
 
+### 删除所有对象（完整工作流）
+
+清理环境或重建数据模型时，需要删除应用内所有自定义对象。流程如下：
+
+```typescript
+// 步骤 1：获取所有对象
+const allObjects = await client.object.listWithIterator();
+// 过滤掉系统预置对象（_ 开头的不可删除）
+const customObjects = allObjects.items.filter(o => !o.apiName.startsWith('_'));
+
+if (customObjects.length === 0) {
+    console.log('没有自定义对象，无需删除');
+    return;
+}
+
+// 步骤 2：获取每个对象的字段，按类型分类
+const referenceFields: { object: string; field: string }[] = [];
+const lookupFields: { object: string; field: string }[] = [];
+
+for (const obj of customObjects) {
+    const fields = await client.object.metadata.fields({ object_name: obj.apiName });
+    for (const field of fields.items || []) {
+        // 跳过系统字段（_ 开头）
+        if (field.apiName.startsWith('_')) continue;
+        if (field.type === 'referenceField') {
+            referenceFields.push({ object: obj.apiName, field: field.apiName });
+        } else if (field.type === 'lookup') {
+            lookupFields.push({ object: obj.apiName, field: field.apiName });
+        }
+    }
+}
+
+// 步骤 3a：先删 reference_field
+if (referenceFields.length > 0) {
+    // 按对象分组
+    const grouped: Record<string, { operator: 'remove'; api_name: string }[]> = {};
+    for (const rf of referenceFields) {
+        (grouped[rf.object] ??= []).push({ operator: 'remove', api_name: rf.field });
+    }
+    await client.schema.update({
+        objects: Object.entries(grouped).map(([api_name, fields]) => ({ api_name, fields }))
+    });
+    console.log(`已删除 ${referenceFields.length} 个 reference_field`);
+}
+
+// 步骤 3b：再删 lookup
+if (lookupFields.length > 0) {
+    const grouped: Record<string, { operator: 'remove'; api_name: string }[]> = {};
+    for (const lf of lookupFields) {
+        (grouped[lf.object] ??= []).push({ operator: 'remove', api_name: lf.field });
+    }
+    await client.schema.update({
+        objects: Object.entries(grouped).map(([api_name, fields]) => ({ api_name, fields }))
+    });
+    console.log(`已删除 ${lookupFields.length} 个 lookup`);
+}
+
+// 步骤 4：删除所有对象
+const apiNames = customObjects.map(o => o.apiName);
+await client.schema.delete({ api_names: apiNames });
+console.log(`已删除对象: ${apiNames.join(', ')}`);
+```
+
+**注意事项**：
+- `_user`、`_department` 等系统对象不可删除，必须过滤
+- 系统字段（`_` 开头）不可删除，只处理自定义字段
+- 如果 lookup 互相引用，不先删 lookup 就直接删对象可能失败
+- 建议删除后用 `client.object.listWithIterator()` 验证是否清理干净
+
 ### 约束速记
 
 - `reference_field` 只能引用 `multiple: false` 的 lookup
