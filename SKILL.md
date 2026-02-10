@@ -87,6 +87,9 @@ new apaas.Client({ auth: { clientId: '...' } });  // 鉴权失败
 | `client.schema.create({ objects })` | 批量创建数据对象 |
 | `client.schema.update({ objects })` | 批量更新对象（添加/修改/删除字段） |
 | `client.schema.delete({ api_names })` | 批量删除数据对象 |
+
+> **批量上限**：`schema.create / update / delete` 每次调用最多 **10 个对象**，超过时需分批调用。
+
 | `client.object.listWithIterator()` | 列出所有数据对象 |
 | `client.object.metadata.fields({ object_name })` | 获取对象所有字段元数据 |
 | `client.object.metadata.export2markdown()` | 导出对象元数据为 Markdown |
