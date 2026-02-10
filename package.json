@@ -1,0 +1,14 @@
+{
+  "name": "apaas-object-skill",
+  "version": "1.0.0",
+  "description": "Claude skill for managing aPaaS data objects (schemas/tables)",
+  "license": "ISC",
+  "private": true,
+  "dependencies": {
+    "apaas-oapi-client": "^0.1.37"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.0.0"
+  }
+}
