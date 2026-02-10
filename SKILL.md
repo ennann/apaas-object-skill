@@ -18,6 +18,36 @@ description: Use when creating, updating, or deleting aPaaS data objects (schema
    - Client Secret（格式：32 位十六进制，如 `a62fc785b97a4847810a4f319ccbdb5e`）
    - Namespace（必须以 `__c` 结尾，如 `package_5dc5b7__c`）
 
+### 初始化 Client
+
+SDK 导出结构为 `{ apaas: { Client } }`，**不是**直接导出 `Client`：
+
+```typescript
+// ESM
+import { apaas } from 'apaas-oapi-client';
+
+// CommonJS
+const { apaas } = require('apaas-oapi-client');
+```
+
+构造参数为**顶层平铺**，不要嵌套在 `auth` 或其他对象下：
+
+```typescript
+// ✅ 正确
+const client = new apaas.Client({
+    clientId: 'c_a4dd955086ec45a882b9',
+    clientSecret: 'a62fc785b97a4847810a4f319ccbdb5e',
+    namespace: 'package_5dc5b7__c'
+});
+await client.init();
+
+// ❌ 错误：不能解构 Client 直接用
+const { Client } = require('apaas-oapi-client');  // Client is undefined
+
+// ❌ 错误：不能嵌套在 auth 下
+new apaas.Client({ auth: { clientId: '...' } });  // 鉴权失败
+```
+
 ## 系统预置规则
 
 ### 系统预置对象（只读）
