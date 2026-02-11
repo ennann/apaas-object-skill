@@ -121,11 +121,7 @@ await client.schema.create({
     objects: [{
         api_name: 'product',
         label: { zh_cn: '产品', en_us: 'Product' },
-        settings: {
-            display_name: '_id',  // 暂时指向 _id，后续字段就位后再更新
-            allow_search_fields: ['_id'],
-            search_layout: []
-        }
+        settings: { display_name: '_id', allow_search_fields: ['_id'], search_layout: [] }
     }]
 });
 
@@ -134,10 +130,6 @@ await client.schema.update({
     objects: [{
         api_name: 'product',
         fields: [
-            { operator: 'add', api_name: 'code',
-              label: { zh_cn: '产品编号', en_us: 'Code' },
-              type: { name: 'text', settings: { required: true, unique: true, case_sensitive: false, multiline: false, max_length: 50 } },
-              encrypt_type: 'none' },
             { operator: 'add', api_name: 'name',
               label: { zh_cn: '产品名称', en_us: 'Name' },
               type: { name: 'text', settings: { required: true, unique: false, case_sensitive: false, multiline: false, max_length: 200 } },
@@ -145,19 +137,9 @@ await client.schema.update({
         ]
     }]
 });
-
-// 步骤 3（可选）：更新 settings，将 display_name 指向实际字段
-await client.schema.update({
-    objects: [{
-        api_name: 'product',
-        settings: {
-            display_name: 'name',           // 不能用 _name
-            allow_search_fields: ['_id', 'code', 'name'],  // 不能包含 _name
-            search_layout: ['code', 'name']
-        }
-    }]
-});
 ```
+
+> 字段就位后可再次调用 `schema.update` 将 `display_name` 从 `_id` 更新为实际字段（如 `name`），注意 **不能用** `_name`。多对象场景见「三阶段创建法」。
 
 ## 更新对象
 
@@ -190,29 +172,21 @@ await client.schema.delete({ api_names: ['product', 'order'] });
 
 ## 字段类型映射（关键陷阱）
 
-metadata 返回的类型名和 schema 接口接受的类型名**不一致**，必须转换：
+metadata 返回的类型名和 schema 接口接受的类型名**不一致**，以下类型**必须转换**（用错会报类型不识别）：
 
-| Metadata Type | Schema Type | 注意 |
-|---|---|---|
-| `text` | `text` | `multiline: false` 单行，`true` 多行 |
-| `number` | `float` | **不能**用 `number` |
-| `option` | `enum` | **不能**用 `option` |
-| `file` | `attachment` | **不能**用 `file` |
-| `autoId` | `auto_number` | **不能**用 `autoId` |
-| `mobileNumber` | `phone` | **不能**用 `mobileNumber` |
-| `avatarOrLogo` | `avatar` | **不能**用 `avatarOrLogo` |
-| `referenceField` | `reference_field` | 依赖 lookup |
-| `bigint` | `bigint` | 同名 |
-| `date` / `datetime` | `date` / `datetime` | 同名 |
-| `boolean` | `boolean` | 同名 |
-| `lookup` | `lookup` | `multiple: false` 单值，`true` 多值 |
-| `richText` | `richText` | 同名 |
-| `email` | `email` | 同名 |
-| `region` | `region` | 同名 |
-| `decimal` | `decimal` | 同名 |
-| `multilingual` | `multilingual` | 同名 |
+| Metadata Type | Schema Type |
+|---|---|
+| `number` | `float` |
+| `option` | `enum` |
+| `file` | `attachment` |
+| `autoId` | `auto_number` |
+| `mobileNumber` | `phone` |
+| `avatarOrLogo` | `avatar` |
+| `referenceField` | `reference_field` |
 
-**机器可读映射源**：本仓库 `references/field-schema-rules.ts` 导出的 `SCHEMA_TYPE_BY_METADATA_TYPE` 和 `FIELD_SCHEMA_RULES`。
+其余类型同名直接使用：`text`、`bigint`、`date`、`datetime`、`boolean`、`lookup`、`richText`、`email`、`region`、`decimal`、`multilingual`。
+
+> 完整映射见 `references/field-schema-rules.ts` 的 `SCHEMA_TYPE_BY_METADATA_TYPE`。
 
 ## 各字段类型 settings 模板（必须遵守）
 
@@ -349,7 +323,7 @@ status ENUM('draft', 'published', 'archived') NOT NULL DEFAULT 'draft'
 **注意**：
 - SQL 的 ENUM 值直接作为 `api_name`（需合法：小写字母、数字、下划线）
 - `label` 的中文需要根据语义翻译，无法机械转换，转换时用英文作为占位、中文标注"待确认"
-- 颜色按顺序从 `blue, cyan, green, yellow, orange, red, magenta, purple, blueMagenta, grey` 中轮询分配
+- 颜色按顺序从 `enum 选项颜色`（见 settings 模板章节）中轮询分配
 
 ### 转换工作流（必须遵守）
 
@@ -534,69 +508,42 @@ await client.schema.update({
 清理环境或重建数据模型时，需要删除应用内所有自定义对象。流程如下：
 
 ```typescript
-// 步骤 1：获取所有对象
+// 步骤 1：获取所有自定义对象（_ 开头为系统预置，不可删除）
 const allObjects = await client.object.listWithIterator();
-// 过滤掉系统预置对象（_ 开头的不可删除）
 const customObjects = allObjects.items.filter(o => !o.apiName.startsWith('_'));
+if (customObjects.length === 0) return;
 
-if (customObjects.length === 0) {
-    console.log('没有自定义对象，无需删除');
-    return;
-}
-
-// 步骤 2：获取每个对象的字段，按类型分类
-const referenceFields: { object: string; field: string }[] = [];
-const lookupFields: { object: string; field: string }[] = [];
-
+// 步骤 2：收集依赖字段
+const fieldsByType: Record<string, { object: string; field: string }[]> = { referenceField: [], lookup: [] };
 for (const obj of customObjects) {
     const result = await client.object.metadata.fields({ object_name: obj.apiName });
     for (const field of result.data?.fields || []) {
-        // 跳过系统字段（_ 开头）
         if (field.apiName.startsWith('_')) continue;
-        if (field.type?.name === 'referenceField' || field.type === 'referenceField') {
-            referenceFields.push({ object: obj.apiName, field: field.apiName });
-        } else if (field.type?.name === 'lookup' || field.type === 'lookup') {
-            lookupFields.push({ object: obj.apiName, field: field.apiName });
+        const typeName = field.type?.name || field.type;
+        if (typeName === 'referenceField' || typeName === 'lookup') {
+            fieldsByType[typeName].push({ object: obj.apiName, field: field.apiName });
         }
     }
 }
 
-// 步骤 3a：先删 reference_field
-if (referenceFields.length > 0) {
-    // 按对象分组
+// 步骤 3：按依赖顺序删字段（reference_field → lookup）
+for (const typeName of ['referenceField', 'lookup']) {
+    const items = fieldsByType[typeName];
+    if (items.length === 0) continue;
     const grouped: Record<string, { operator: 'remove'; api_name: string }[]> = {};
-    for (const rf of referenceFields) {
-        (grouped[rf.object] ??= []).push({ operator: 'remove', api_name: rf.field });
+    for (const { object, field } of items) {
+        (grouped[object] ??= []).push({ operator: 'remove', api_name: field });
     }
     await client.schema.update({
         objects: Object.entries(grouped).map(([api_name, fields]) => ({ api_name, fields }))
     });
-    console.log(`已删除 ${referenceFields.length} 个 reference_field`);
-}
-
-// 步骤 3b：再删 lookup
-if (lookupFields.length > 0) {
-    const grouped: Record<string, { operator: 'remove'; api_name: string }[]> = {};
-    for (const lf of lookupFields) {
-        (grouped[lf.object] ??= []).push({ operator: 'remove', api_name: lf.field });
-    }
-    await client.schema.update({
-        objects: Object.entries(grouped).map(([api_name, fields]) => ({ api_name, fields }))
-    });
-    console.log(`已删除 ${lookupFields.length} 个 lookup`);
 }
 
 // 步骤 4：删除所有对象
-const apiNames = customObjects.map(o => o.apiName);
-await client.schema.delete({ api_names: apiNames });
-console.log(`已删除对象: ${apiNames.join(', ')}`);
+await client.schema.delete({ api_names: customObjects.map(o => o.apiName) });
 ```
 
-**注意事项**：
-- `_user`、`_department` 等系统对象不可删除，必须过滤
-- 系统字段（`_` 开头）不可删除，只处理自定义字段
-- 如果 lookup 互相引用，不先删 lookup 就直接删对象可能失败
-- 建议删除后用 `client.object.listWithIterator()` 验证是否清理干净
+> 删除后建议用 `verifyObjects()` 或 `client.object.listWithIterator()` 确认清理干净。
 
 ### 约束速记
 
@@ -669,80 +616,34 @@ if (failed.length > 0) {
 
 ## 响应验证
 
-响应有**三种状态**，必须全部检查：
+每次 API 调用后必须检查**三层状态**：
 
-```typescript
-const result = await client.schema.update({ objects: [...] });
+1. **`result.code !== '0'`** — 请求级错误（参数格式问题）
+2. **`result.code === '0' && result.data === null`** — ⚠️ **静默失败**（最危险：看起来成功，但字段未创建。原因：settings 缺必填项）
+3. **`result.data.items[].status.code !== '0'`** — 单个对象级错误
 
-// 1. 顶层 code≠"0"：请求级错误（参数格式问题）
-if (result.code !== '0') {
-    console.error('请求失败:', result.msg);
-}
+> 上述三层检查已封装在 `scripts/run.ts` 的 `checkResponse(result, context)` 函数中，直接调用即可。
 
-// 2. ⚠️ code="0" 但 data=null：静默失败（字段 settings 缺必填项）
-// 这是最危险的情况！看起来成功，但字段没有被创建。
-if (result.code === '0' && result.data === null) {
-    console.error('⚠️ 静默失败：code=0 但 data=null，字段可能未创建。检查 settings 是否完整（text 必须有 multiline，auto_number 必须有 generation_method）');
-}
+## 创建后验证
 
-// 3. data.items 存在：逐项检查
-for (const item of result.data?.items || []) {
-    if (item.status?.code && item.status.code !== '0') {
-        console.error(`对象 ${item.api_name} 失败:`, item.status.message);
-    }
-}
-```
+创建/更新对象后，调用 `scripts/run.ts` 的 `verifyObjects(['product', ...])` 验证：自动检查对象是否存在、列出自定义字段及类型、导出 Markdown 供人工审查。
 
-## 创建后验证工作流
-
-创建/更新对象后，建议验证：
-
-```typescript
-// 1. 列出对象，确认存在
-const objects = await client.object.listWithIterator();
-const found = objects.items.find(o => o.apiName === 'product');
-
-// 2. 获取字段元数据，验证字段定义（字段在 result.data.fields 中）
-const fieldResult = await client.object.metadata.fields({ object_name: 'product' });
-const fields = fieldResult.data?.fields || [];
-
-// 3. 导出 Markdown，便于人工审查
-const md = await client.object.metadata.export2markdown({ object_names: ['product'] });
-console.log(md);
-```
-
-## 执行脚本
-
-`scripts/run.ts` 用于快速执行 schema 操作：
+## 执行脚本与目录结构
 
 ```bash
-# 1. 安装依赖
-npm install
-
-# 2. 配置凭据（格式见"前置条件"）
-cp scripts/.env.example scripts/.env
-# 编辑 scripts/.env 填入真实值
-
-# 3. 在 scripts/run.ts 的 main() 中编写操作，然后执行
+npm install && cp scripts/.env.example scripts/.env  # 填入凭据后执行：
 npx ts-node scripts/run.ts
 ```
 
-脚本自动从 `.env` 读取凭据、初始化 client、执行操作。内置 `verifyObjects()` 函数用于创建后验证。
-
-## 目录结构
+`scripts/run.ts` 自动加载凭据、初始化 client，内置工具函数：`checkResponse()`（三层响应验证）、`batchExecute()`（自动分批）、`verifyObjects()`（字段级验证）。
 
 ```
 apaas-object-skill/
   SKILL.md                          # 主文档（Claude 读取此文件）
-  LICENSE.txt                       # ISC 协议
   references/
-    FIELD_SCHEMA_RULES.md           # 字段类型映射、依赖规则（人读版）
-    field-schema-rules.ts           # 字段类型映射、依赖规则（机器可读版，TypeScript）
+    FIELD_SCHEMA_RULES.md           # 字段类型映射与规则（人读版）
+    field-schema-rules.ts           # 字段类型映射与规则（机器可读版，含 SQL 转换规则）
   scripts/
     run.ts                          # 执行脚本（凭据加载、client 初始化、工具函数）
     .env.example                    # 凭据配置模板
 ```
-
-## 其他参考
-
-- 字段规则 TypeScript 定义（机器可读源）：本仓库 `references/field-schema-rules.ts`
