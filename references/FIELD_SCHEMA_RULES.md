@@ -86,6 +86,37 @@ Allowed option colors:
   - add phase: create `lookup`/`lookup_multi` before `reference_field`
   - remove phase: remove `reference_field` before `lookup`/`lookup_multi`
 
+## SQL type → aPaaS type mapping
+
+For converting relational database designs (MySQL, PostgreSQL, SQLite, etc.) to aPaaS objects.
+
+| SQL Type | aPaaS Schema Type | Notes |
+| --- | --- | --- |
+| `VARCHAR(n)` / `CHAR(n)` | `text` | `max_length: n`, `multiline: false` |
+| `TEXT` / `LONGTEXT` | `text` | `multiline: true`, `max_length: 100000` |
+| `INT` / `INTEGER` / `BIGINT` | `bigint` | No int/bigint distinction in aPaaS |
+| `FLOAT` / `DOUBLE` | `float` | `decimal_places_number: 2` |
+| `DECIMAL(p,s)` | `decimal` | `decimal_places: s` |
+| `DATE` | `date` | Direct mapping |
+| `DATETIME` / `TIMESTAMP` | `datetime` | Direct mapping |
+| `BOOLEAN` / `TINYINT(1)` | `boolean` | Map DEFAULT to `default_value` |
+| `ENUM('a','b')` | `enum` | Each value → `options` array item |
+| `BLOB` / `BINARY` | `attachment` | `any_type: true` |
+
+**Semantic column name rules** (override SQL type when matched):
+- `*email*` → `email`
+- `*phone*` / `*mobile*` / `*tel*` → `phone`
+- `*avatar*` / `*logo*` → `avatar`
+- `*region*` / `*province*` / `*city*` → `region`
+
+**Relational concepts:**
+- `FOREIGN KEY` → `lookup` (`multiple: false`)
+- Many-to-many join table → `lookup` (`multiple: true`) on one side; eliminate join table
+- `PRIMARY KEY` / `AUTO_INCREMENT` → ignored (aPaaS uses system `_id`)
+- `NOT NULL` → `required: true`
+- `UNIQUE` → `unique: true`
+- `CHECK` / `INDEX` / triggers / stored procedures → not supported in aPaaS
+
 ## Canonical machine-readable source
 
 本仓库 `references/field-schema-rules.ts` 为机器可读源，导出 `SCHEMA_TYPE_BY_METADATA_TYPE`、`FIELD_SCHEMA_RULES`、`OPTION_COLOR_LIST`、`BATCH_UPDATE_REQUIREMENTS` 等常量。

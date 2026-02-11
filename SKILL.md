@@ -1,6 +1,6 @@
 ---
 name: apaas-object-skill
-description: Use when managing aPaaS platform data objects via the apaas-oapi-client Node SDK (client.schema.create/update/delete).
+description: Use when managing aPaaS platform data objects via the apaas-oapi-client Node SDK (client.schema.create/update/delete), or when converting relational database designs (MySQL, PostgreSQL, SQLite DDL, ER diagrams) to aPaaS objects.
 ---
 
 # aPaaS 数据对象管理
@@ -245,6 +245,177 @@ metadata 返回的类型名和 schema 接口接受的类型名**不一致**，�
 - **`auto_number`**：`generation_method` 必须传（如 `"random"`）
 
 **enum 选项颜色**：`blue, cyan, green, yellow, orange, red, magenta, purple, blueMagenta, grey`
+
+## 从关系型数据库设计转换为 aPaaS 对象
+
+用户提供的数据模型文档可能基于 MySQL、PostgreSQL、SQLite 等关系型数据库设计。以下规则指导如何将其转换为 aPaaS 平台的对象和字段。
+
+**转换完成后，必须先生成转换确认表呈现给用户确认，再执行创建操作。**
+
+### SQL 列类型 → aPaaS 字段类型
+
+| SQL 类型 | aPaaS Schema Type | settings 要点 | 转换说明 |
+|---|---|---|---|
+| `VARCHAR(n)` / `CHAR(n)` | `text` | `multiline: false, max_length: n` | n > 255 时建议确认是否需要多行 |
+| `TEXT` / `LONGTEXT` / `MEDIUMTEXT` | `text` | `multiline: true, max_length: 100000` | 大文本映射为多行文本 |
+| `INT` / `INTEGER` / `BIGINT` / `SERIAL` | `bigint` | `required: false, unique: false` | aPaaS 无 int/bigint 区分，统一用 bigint |
+| `FLOAT` / `DOUBLE` / `REAL` | `float` | `decimal_places_number: 2` | 按需调整小数位 |
+| `DECIMAL(p,s)` / `NUMERIC(p,s)` | `decimal` | `decimal_places: s` | s 映射为 `decimal_places` |
+| `DATE` | `date` | `required: false` | 直接映射 |
+| `DATETIME` / `TIMESTAMP` | `datetime` | `required: false` | 统一映射为 datetime |
+| `BOOLEAN` / `TINYINT(1)` / `BIT` | `boolean` | `default_value: true/false` | 注意转换 DEFAULT 值 |
+| `ENUM('a','b','c')` | `enum` | 每个枚举值转为 `options` 数组项 | 见下方枚举转换规则 |
+| `JSON`（存富文本） | `richText` | `max_length: 1000` | 仅当 JSON 用于富文本时 |
+| `BLOB` / `BINARY` / `VARBINARY` | `attachment` | `any_type: true` | 二进制文件类的列 |
+
+**特殊语义识别**（根据列名或注释推断更精确的类型）：
+
+| 列名模式 | 推断 aPaaS 类型 | 判断依据 |
+|---|---|---|
+| `email` / `*_email` / `mail` | `email` | 列名含 email/mail |
+| `phone` / `mobile` / `tel` / `*_phone` | `phone` | 列名含 phone/mobile/tel |
+| `avatar` / `logo` / `profile_image` | `avatar` | 列名含 avatar/logo |
+| `auto_number` / `serial_no` / `*_code`（自增编号类） | `auto_number` | 列名暗示自增编号且有 AUTO_INCREMENT 或 SERIAL |
+| `region` / `province` / `city` / `address` | `region` | 列名含地区信息 |
+
+> **注意**：语义识别是启发式的，转换后必须让用户确认。当无法确定时，默认映射为 `text`。
+
+### SQL 约束 → aPaaS 字段 settings
+
+| SQL 约束 | aPaaS settings | 说明 |
+|---|---|---|
+| `NOT NULL` | `required: true` | 非空约束 |
+| `UNIQUE` | `unique: true` | 唯一约束 |
+| `DEFAULT value` | `default_value: value`（boolean）| 仅 boolean 类型支持默认值 |
+| `PRIMARY KEY` (`id`) | 不转换 | aPaaS 自动生成 `_id`，忽略用户的主键列 |
+| `AUTO_INCREMENT` | 通常忽略 | `_id` 自动处理；如果是业务编号列，用 `auto_number` |
+| `CHECK` | 不直接支持 | 需要在应用层实现或告知用户 aPaaS 不支持 |
+| `INDEX` | 不转换 | aPaaS 自动管理索引 |
+
+### 外键与关联关系 → lookup / reference_field
+
+这是转换中**最关键**的部分。关系型数据库用外键表达关联，aPaaS 用 lookup 和 reference_field。
+
+| 关系型设计 | aPaaS 转换 | 示例 |
+|---|---|---|
+| **外键列**（`order.customer_id REFERENCES customer(id)`） | 在 order 上创建 `lookup` 字段，`referenced_object_api_name: 'customer'` | `customer_id INT FK` → lookup |
+| **一对多**（一个 customer 有多个 order） | 多的一方（order）加 `lookup`（`multiple: false`）指向一的一方 | 标准 lookup |
+| **多对多**（中间表 `student_course(student_id, course_id)`） | **消除中间表**，在任一方加 `lookup`（`multiple: true`）指向另一方 | 中间表不创建为 aPaaS 对象 |
+| **自关联**（`employee.manager_id REFERENCES employee(id)`） | 同一对象上创建 lookup 指向自身 | `referenced_object_api_name` 指向自己 |
+| **外键 + 需要显示关联对象的字段**（如订单列表要显示客户名称） | 先建 lookup，再建 `reference_field` 引用目标对象的字段 | lookup + reference_field 组合 |
+
+**中间表识别规则**：
+- 表只有两个外键列（+ 可能的 id 和时间戳）
+- 表名是两个实体名的组合（如 `student_course`、`user_role`、`tag_article`）
+- 没有独立的业务字段
+
+遇到中间表时：
+1. **不要**创建为 aPaaS 对象
+2. 在关系的某一方创建 `lookup`（`multiple: true`）指向另一方
+3. 选择哪一方加 lookup 时，优先选择业务上"主动关联"的一方（如学生选课 → 在 student 上加 lookup 指向 course）
+4. 如果中间表有额外业务字段（如 `score`、`enrolled_at`），则**必须保留为独立对象**，两端各用一个 lookup
+
+### SQL ENUM → aPaaS enum 转换规则
+
+```sql
+-- SQL 定义
+status ENUM('draft', 'published', 'archived') NOT NULL DEFAULT 'draft'
+```
+
+转换为：
+
+```typescript
+{
+    operator: 'add',
+    api_name: 'status',
+    label: { zh_cn: '状态', en_us: 'Status' },
+    type: {
+        name: 'enum',
+        settings: {
+            required: true,    // 来自 NOT NULL
+            multiple: false,
+            option_source: 'custom',
+            options: [
+                { label: { zh_cn: '草稿', en_us: 'Draft' }, api_name: 'draft', color: 'grey', active: true },
+                { label: { zh_cn: '已发布', en_us: 'Published' }, api_name: 'published', color: 'green', active: true },
+                { label: { zh_cn: '已归档', en_us: 'Archived' }, api_name: 'archived', color: 'blue', active: true }
+            ]
+        }
+    },
+    encrypt_type: 'none'
+}
+```
+
+**注意**：
+- SQL 的 ENUM 值直接作为 `api_name`（需合法：小写字母、数字、下划线）
+- `label` 的中文需要根据语义翻译，无法机械转换，转换时用英文作为占位、中文标注"待确认"
+- 颜色按顺序从 `blue, cyan, green, yellow, orange, red, magenta, purple, blueMagenta, grey` 中轮询分配
+
+### 转换工作流（必须遵守）
+
+拿到用户的数据库设计文档（SQL DDL、ER 图描述、表格等）后，按以下流程执行：
+
+**第一步：解析与识别**
+
+1. 提取所有表（→ aPaaS 对象）和列（→ aPaaS 字段）
+2. 识别主键列 → 忽略（aPaaS 用 `_id`）
+3. 识别外键列 → 标记为 lookup 候选
+4. 识别中间表 → 标记为"消除"或"保留"
+5. 识别 ENUM 列 → 提取枚举值列表
+6. 对每个列按「SQL 列类型映射表」和「语义识别规则」确定 aPaaS 类型
+
+**第二步：生成转换确认表**
+
+以 Markdown 表格形式呈现给用户，**必须等待用户确认后才能执行创建**：
+
+```markdown
+## 转换结果确认
+
+### 对象列表
+| SQL 表名 | aPaaS 对象 api_name | 标签(zh_cn) | 处理方式 |
+|---|---|---|---|
+| customer | customer | 客户 | 创建 |
+| order | order | 订单 | 创建 |
+| order_item | order_item | 订单明细 | 创建 |
+| customer_tag | — | — | ⚠️ 识别为中间表，不创建（在 customer 上加 tags lookup） |
+
+### 字段转换明细
+| 对象 | SQL 列 | SQL 类型 | → aPaaS 类型 | api_name | 说明 |
+|---|---|---|---|---|---|
+| customer | id | INT PK | — | — | 忽略（用系统 _id） |
+| customer | name | VARCHAR(100) NOT NULL | text | name | required: true, max_length: 100 |
+| customer | email | VARCHAR(200) | email | email | 语义识别为 email 类型 |
+| customer | status | ENUM('active','inactive') | enum | status | 2 个选项 |
+| order | customer_id | INT FK→customer | lookup | customer | 关联客户 |
+| order | total | DECIMAL(10,2) | decimal | total | decimal_places: 2 |
+
+### 需要确认的项
+- [ ] customer.email: 推断为 `email` 类型，是否正确？还是保持 `text`？
+- [ ] customer_tag 识别为中间表，是否正确？如果该表有额外业务字段请告知
+- [ ] enum 选项的中文标签是否准确？
+
+请确认或修改后，我将按照三阶段创建法执行。
+```
+
+**第三步：用户确认后执行**
+
+用户确认后，按「多对象依赖分析与分阶段创建」章节的流程执行（1a 空壳 → 1b 基础字段 → 2 lookup → 3 reference_field）。
+
+### 不可转换的 SQL 特性
+
+以下 SQL 特性在 aPaaS 中无直接对应，需告知用户：
+
+| SQL 特性 | aPaaS 处理方式 |
+|---|---|
+| 存储过程 / 触发器 | 不支持，需用应用逻辑实现 |
+| 视图（VIEW） | 不支持，忽略 |
+| 复合主键 | 不支持，aPaaS 用 `_id` 单列主键 |
+| 复合唯一约束（多列联合） | 不支持单字段级 `unique` 无法表达联合唯一 |
+| CHECK 约束 | 不直接支持，需在应用层校验 |
+| 分区表 | 不支持，忽略 |
+| 自定义函数 / 计算列 | 不支持 |
+
+遇到这些特性时，在转换确认表中标注"⚠️ 不支持"并给出替代建议（如果有的话）。
 
 ## 多对象依赖分析与分阶段创建（核心策略）
 
