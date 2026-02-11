@@ -324,6 +324,69 @@ export const SCHEMA_TYPE_MISMATCHES: Array<{
         schemaType: rule.schemaType
     }));
 
+// ── SQL → aPaaS 转换规则 ─────────────────────────────────
+
+export interface SqlTypeMapping {
+    /** SQL 类型的正则匹配模式（不区分大小写） */
+    sqlPattern: string;
+    /** 映射到的 aPaaS schema type */
+    schemaType: SchemaFieldType;
+    /** 从 SQL 类型提取 settings 的逻辑说明 */
+    settingsMapping: string;
+}
+
+export const SQL_TYPE_TO_SCHEMA_TYPE: SqlTypeMapping[] = [
+    { sqlPattern: 'VARCHAR\\(\\d+\\)|CHAR\\(\\d+\\)', schemaType: 'text', settingsMapping: 'max_length from (n), multiline: false' },
+    { sqlPattern: 'TEXT|LONGTEXT|MEDIUMTEXT|TINYTEXT|CLOB', schemaType: 'text', settingsMapping: 'multiline: true, max_length: 100000' },
+    { sqlPattern: 'INT|INTEGER|BIGINT|SMALLINT|TINYINT(?!\\(1\\))|MEDIUMINT|SERIAL', schemaType: 'bigint', settingsMapping: 'required/unique from constraints' },
+    { sqlPattern: 'FLOAT|DOUBLE|REAL', schemaType: 'float', settingsMapping: 'decimal_places_number: 2' },
+    { sqlPattern: 'DECIMAL\\(\\d+,\\d+\\)|NUMERIC\\(\\d+,\\d+\\)', schemaType: 'decimal', settingsMapping: 'decimal_places from scale (s)' },
+    { sqlPattern: 'DATE', schemaType: 'date', settingsMapping: 'required from constraints' },
+    { sqlPattern: 'DATETIME|TIMESTAMP', schemaType: 'datetime', settingsMapping: 'required from constraints' },
+    { sqlPattern: 'BOOLEAN|BOOL|TINYINT\\(1\\)|BIT', schemaType: 'boolean', settingsMapping: 'default_value from DEFAULT' },
+    { sqlPattern: 'ENUM\\(.*\\)', schemaType: 'enum', settingsMapping: 'options from enum values, colors auto-assigned' },
+    { sqlPattern: 'BLOB|BINARY|VARBINARY|LONGBLOB|MEDIUMBLOB', schemaType: 'attachment', settingsMapping: 'any_type: true' },
+    { sqlPattern: 'JSON', schemaType: 'richText', settingsMapping: 'only when JSON stores rich text content' }
+];
+
+export interface ColumnNameSemanticRule {
+    /** 列名匹配模式（正则，不区分大小写） */
+    columnPattern: string;
+    /** 推断的 aPaaS schema type（优先级高于 SQL 类型映射） */
+    schemaType: SchemaFieldType;
+    /** 推断说明 */
+    notes: string;
+}
+
+export const COLUMN_NAME_SEMANTIC_RULES: ColumnNameSemanticRule[] = [
+    { columnPattern: '(^|_)(e?mail)(s?$|_)', schemaType: 'email', notes: 'Column name contains email/mail' },
+    { columnPattern: '(^|_)(phone|mobile|tel)(s?$|_)', schemaType: 'phone', notes: 'Column name contains phone/mobile/tel' },
+    { columnPattern: '(^|_)(avatar|logo|profile_image)(s?$|_)', schemaType: 'avatar', notes: 'Column name contains avatar/logo' },
+    { columnPattern: '(^|_)(region|province|city|district|address)(s?$|_)', schemaType: 'region', notes: 'Column name implies geographic data' }
+];
+
+export interface SqlConstraintMapping {
+    /** SQL 约束 */
+    sqlConstraint: string;
+    /** 对应的 aPaaS settings 字段 */
+    settingsField: string;
+    /** 映射值 */
+    settingsValue: string;
+    /** 说明 */
+    notes: string;
+}
+
+export const SQL_CONSTRAINT_TO_SETTINGS: SqlConstraintMapping[] = [
+    { sqlConstraint: 'NOT NULL', settingsField: 'required', settingsValue: 'true', notes: 'Maps to required: true' },
+    { sqlConstraint: 'UNIQUE', settingsField: 'unique', settingsValue: 'true', notes: 'Maps to unique: true' },
+    { sqlConstraint: 'PRIMARY KEY', settingsField: '-', settingsValue: '-', notes: 'Ignored: aPaaS uses system _id' },
+    { sqlConstraint: 'AUTO_INCREMENT', settingsField: '-', settingsValue: '-', notes: 'Ignored: aPaaS _id auto-increments. For business serial numbers, use auto_number' },
+    { sqlConstraint: 'FOREIGN KEY', settingsField: 'referenced_object_api_name', settingsValue: '(target table)', notes: 'Convert to lookup field' },
+    { sqlConstraint: 'DEFAULT', settingsField: 'default_value', settingsValue: '(value)', notes: 'Only boolean type supports default_value in aPaaS' },
+    { sqlConstraint: 'CHECK', settingsField: '-', settingsValue: '-', notes: 'Not supported in aPaaS, handle in application logic' },
+    { sqlConstraint: 'INDEX', settingsField: '-', settingsValue: '-', notes: 'Not applicable, aPaaS manages indexing automatically' }
+];
+
 export const BATCH_UPDATE_REQUIREMENTS = {
     add: 'Use operator=add with full field definition.',
     replace: 'Use operator=replace and include full `type` (name + settings). Label-only replace fails.',

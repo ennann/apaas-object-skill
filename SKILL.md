@@ -1,6 +1,6 @@
 ---
 name: apaas-object-skill
-description: Use when managing aPaaS platform data objects via the apaas-oapi-client Node SDK (client.schema.create/update/delete).
+description: Use when managing aPaaS platform data objects via the apaas-oapi-client Node SDK (client.schema.create/update/delete), or when converting relational database designs (MySQL, PostgreSQL, SQLite DDL, ER diagrams) to aPaaS objects.
 ---
 
 # aPaaS 数据对象管理
@@ -121,11 +121,7 @@ await client.schema.create({
     objects: [{
         api_name: 'product',
         label: { zh_cn: '产品', en_us: 'Product' },
-        settings: {
-            display_name: '_id',  // 暂时指向 _id，后续字段就位后再更新
-            allow_search_fields: ['_id'],
-            search_layout: []
-        }
+        settings: { display_name: '_id', allow_search_fields: ['_id'], search_layout: [] }
     }]
 });
 
@@ -134,10 +130,6 @@ await client.schema.update({
     objects: [{
         api_name: 'product',
         fields: [
-            { operator: 'add', api_name: 'code',
-              label: { zh_cn: '产品编号', en_us: 'Code' },
-              type: { name: 'text', settings: { required: true, unique: true, case_sensitive: false, multiline: false, max_length: 50 } },
-              encrypt_type: 'none' },
             { operator: 'add', api_name: 'name',
               label: { zh_cn: '产品名称', en_us: 'Name' },
               type: { name: 'text', settings: { required: true, unique: false, case_sensitive: false, multiline: false, max_length: 200 } },
@@ -145,19 +137,9 @@ await client.schema.update({
         ]
     }]
 });
-
-// 步骤 3（可选）：更新 settings，将 display_name 指向实际字段
-await client.schema.update({
-    objects: [{
-        api_name: 'product',
-        settings: {
-            display_name: 'name',           // 不能用 _name
-            allow_search_fields: ['_id', 'code', 'name'],  // 不能包含 _name
-            search_layout: ['code', 'name']
-        }
-    }]
-});
 ```
+
+> 字段就位后可再次调用 `schema.update` 将 `display_name` 从 `_id` 更新为实际字段（如 `name`），注意 **不能用** `_name`。多对象场景见「三阶段创建法」。
 
 ## 更新对象
 
@@ -190,29 +172,21 @@ await client.schema.delete({ api_names: ['product', 'order'] });
 
 ## 字段类型映射（关键陷阱）
 
-metadata 返回的类型名和 schema 接口接受的类型名**不一致**，必须转换：
+metadata 返回的类型名和 schema 接口接受的类型名**不一致**，以下类型**必须转换**（用错会报类型不识别）：
 
-| Metadata Type | Schema Type | 注意 |
-|---|---|---|
-| `text` | `text` | `multiline: false` 单行，`true` 多行 |
-| `number` | `float` | **不能**用 `number` |
-| `option` | `enum` | **不能**用 `option` |
-| `file` | `attachment` | **不能**用 `file` |
-| `autoId` | `auto_number` | **不能**用 `autoId` |
-| `mobileNumber` | `phone` | **不能**用 `mobileNumber` |
-| `avatarOrLogo` | `avatar` | **不能**用 `avatarOrLogo` |
-| `referenceField` | `reference_field` | 依赖 lookup |
-| `bigint` | `bigint` | 同名 |
-| `date` / `datetime` | `date` / `datetime` | 同名 |
-| `boolean` | `boolean` | 同名 |
-| `lookup` | `lookup` | `multiple: false` 单值，`true` 多值 |
-| `richText` | `richText` | 同名 |
-| `email` | `email` | 同名 |
-| `region` | `region` | 同名 |
-| `decimal` | `decimal` | 同名 |
-| `multilingual` | `multilingual` | 同名 |
+| Metadata Type | Schema Type |
+|---|---|
+| `number` | `float` |
+| `option` | `enum` |
+| `file` | `attachment` |
+| `autoId` | `auto_number` |
+| `mobileNumber` | `phone` |
+| `avatarOrLogo` | `avatar` |
+| `referenceField` | `reference_field` |
 
-**机器可读映射源**：本仓库 `references/field-schema-rules.ts` 导出的 `SCHEMA_TYPE_BY_METADATA_TYPE` 和 `FIELD_SCHEMA_RULES`。
+其余类型同名直接使用：`text`、`bigint`、`date`、`datetime`、`boolean`、`lookup`、`richText`、`email`、`region`、`decimal`、`multilingual`。
+
+> 完整映射见 `references/field-schema-rules.ts` 的 `SCHEMA_TYPE_BY_METADATA_TYPE`。
 
 ## 各字段类型 settings 模板（必须遵守）
 
@@ -245,6 +219,177 @@ metadata 返回的类型名和 schema 接口接受的类型名**不一致**，�
 - **`auto_number`**：`generation_method` 必须传（如 `"random"`）
 
 **enum 选项颜色**：`blue, cyan, green, yellow, orange, red, magenta, purple, blueMagenta, grey`
+
+## 从关系型数据库设计转换为 aPaaS 对象
+
+用户提供的数据模型文档可能基于 MySQL、PostgreSQL、SQLite 等关系型数据库设计。以下规则指导如何将其转换为 aPaaS 平台的对象和字段。
+
+**转换完成后，必须先生成转换确认表呈现给用户确认，再执行创建操作。**
+
+### SQL 列类型 → aPaaS 字段类型
+
+| SQL 类型 | aPaaS Schema Type | settings 要点 | 转换说明 |
+|---|---|---|---|
+| `VARCHAR(n)` / `CHAR(n)` | `text` | `multiline: false, max_length: n` | n > 255 时建议确认是否需要多行 |
+| `TEXT` / `LONGTEXT` / `MEDIUMTEXT` | `text` | `multiline: true, max_length: 100000` | 大文本映射为多行文本 |
+| `INT` / `INTEGER` / `BIGINT` / `SERIAL` | `bigint` | `required: false, unique: false` | aPaaS 无 int/bigint 区分，统一用 bigint |
+| `FLOAT` / `DOUBLE` / `REAL` | `float` | `decimal_places_number: 2` | 按需调整小数位 |
+| `DECIMAL(p,s)` / `NUMERIC(p,s)` | `decimal` | `decimal_places: s` | s 映射为 `decimal_places` |
+| `DATE` | `date` | `required: false` | 直接映射 |
+| `DATETIME` / `TIMESTAMP` | `datetime` | `required: false` | 统一映射为 datetime |
+| `BOOLEAN` / `TINYINT(1)` / `BIT` | `boolean` | `default_value: true/false` | 注意转换 DEFAULT 值 |
+| `ENUM('a','b','c')` | `enum` | 每个枚举值转为 `options` 数组项 | 见下方枚举转换规则 |
+| `JSON`（存富文本） | `richText` | `max_length: 1000` | 仅当 JSON 用于富文本时 |
+| `BLOB` / `BINARY` / `VARBINARY` | `attachment` | `any_type: true` | 二进制文件类的列 |
+
+**特殊语义识别**（根据列名或注释推断更精确的类型）：
+
+| 列名模式 | 推断 aPaaS 类型 | 判断依据 |
+|---|---|---|
+| `email` / `*_email` / `mail` | `email` | 列名含 email/mail |
+| `phone` / `mobile` / `tel` / `*_phone` | `phone` | 列名含 phone/mobile/tel |
+| `avatar` / `logo` / `profile_image` | `avatar` | 列名含 avatar/logo |
+| `auto_number` / `serial_no` / `*_code`（自增编号类） | `auto_number` | 列名暗示自增编号且有 AUTO_INCREMENT 或 SERIAL |
+| `region` / `province` / `city` / `address` | `region` | 列名含地区信息 |
+
+> **注意**：语义识别是启发式的，转换后必须让用户确认。当无法确定时，默认映射为 `text`。
+
+### SQL 约束 → aPaaS 字段 settings
+
+| SQL 约束 | aPaaS settings | 说明 |
+|---|---|---|
+| `NOT NULL` | `required: true` | 非空约束 |
+| `UNIQUE` | `unique: true` | 唯一约束 |
+| `DEFAULT value` | `default_value: value`（boolean）| 仅 boolean 类型支持默认值 |
+| `PRIMARY KEY` (`id`) | 不转换 | aPaaS 自动生成 `_id`，忽略用户的主键列 |
+| `AUTO_INCREMENT` | 通常忽略 | `_id` 自动处理；如果是业务编号列，用 `auto_number` |
+| `CHECK` | 不直接支持 | 需要在应用层实现或告知用户 aPaaS 不支持 |
+| `INDEX` | 不转换 | aPaaS 自动管理索引 |
+
+### 外键与关联关系 → lookup / reference_field
+
+这是转换中**最关键**的部分。关系型数据库用外键表达关联，aPaaS 用 lookup 和 reference_field。
+
+| 关系型设计 | aPaaS 转换 | 示例 |
+|---|---|---|
+| **外键列**（`order.customer_id REFERENCES customer(id)`） | 在 order 上创建 `lookup` 字段，`referenced_object_api_name: 'customer'` | `customer_id INT FK` → lookup |
+| **一对多**（一个 customer 有多个 order） | 多的一方（order）加 `lookup`（`multiple: false`）指向一的一方 | 标准 lookup |
+| **多对多**（中间表 `student_course(student_id, course_id)`） | **消除中间表**，在任一方加 `lookup`（`multiple: true`）指向另一方 | 中间表不创建为 aPaaS 对象 |
+| **自关联**（`employee.manager_id REFERENCES employee(id)`） | 同一对象上创建 lookup 指向自身 | `referenced_object_api_name` 指向自己 |
+| **外键 + 需要显示关联对象的字段**（如订单列表要显示客户名称） | 先建 lookup，再建 `reference_field` 引用目标对象的字段 | lookup + reference_field 组合 |
+
+**中间表识别规则**：
+- 表只有两个外键列（+ 可能的 id 和时间戳）
+- 表名是两个实体名的组合（如 `student_course`、`user_role`、`tag_article`）
+- 没有独立的业务字段
+
+遇到中间表时：
+1. **不要**创建为 aPaaS 对象
+2. 在关系的某一方创建 `lookup`（`multiple: true`）指向另一方
+3. 选择哪一方加 lookup 时，优先选择业务上"主动关联"的一方（如学生选课 → 在 student 上加 lookup 指向 course）
+4. 如果中间表有额外业务字段（如 `score`、`enrolled_at`），则**必须保留为独立对象**，两端各用一个 lookup
+
+### SQL ENUM → aPaaS enum 转换规则
+
+```sql
+-- SQL 定义
+status ENUM('draft', 'published', 'archived') NOT NULL DEFAULT 'draft'
+```
+
+转换为：
+
+```typescript
+{
+    operator: 'add',
+    api_name: 'status',
+    label: { zh_cn: '状态', en_us: 'Status' },
+    type: {
+        name: 'enum',
+        settings: {
+            required: true,    // 来自 NOT NULL
+            multiple: false,
+            option_source: 'custom',
+            options: [
+                { label: { zh_cn: '草稿', en_us: 'Draft' }, api_name: 'draft', color: 'grey', active: true },
+                { label: { zh_cn: '已发布', en_us: 'Published' }, api_name: 'published', color: 'green', active: true },
+                { label: { zh_cn: '已归档', en_us: 'Archived' }, api_name: 'archived', color: 'blue', active: true }
+            ]
+        }
+    },
+    encrypt_type: 'none'
+}
+```
+
+**注意**：
+- SQL 的 ENUM 值直接作为 `api_name`（需合法：小写字母、数字、下划线）
+- `label` 的中文需要根据语义翻译，无法机械转换，转换时用英文作为占位、中文标注"待确认"
+- 颜色按顺序从 `enum 选项颜色`（见 settings 模板章节）中轮询分配
+
+### 转换工作流（必须遵守）
+
+拿到用户的数据库设计文档（SQL DDL、ER 图描述、表格等）后，按以下流程执行：
+
+**第一步：解析与识别**
+
+1. 提取所有表（→ aPaaS 对象）和列（→ aPaaS 字段）
+2. 识别主键列 → 忽略（aPaaS 用 `_id`）
+3. 识别外键列 → 标记为 lookup 候选
+4. 识别中间表 → 标记为"消除"或"保留"
+5. 识别 ENUM 列 → 提取枚举值列表
+6. 对每个列按「SQL 列类型映射表」和「语义识别规则」确定 aPaaS 类型
+
+**第二步：生成转换确认表**
+
+以 Markdown 表格形式呈现给用户，**必须等待用户确认后才能执行创建**：
+
+```markdown
+## 转换结果确认
+
+### 对象列表
+| SQL 表名 | aPaaS 对象 api_name | 标签(zh_cn) | 处理方式 |
+|---|---|---|---|
+| customer | customer | 客户 | 创建 |
+| order | order | 订单 | 创建 |
+| order_item | order_item | 订单明细 | 创建 |
+| customer_tag | — | — | ⚠️ 识别为中间表，不创建（在 customer 上加 tags lookup） |
+
+### 字段转换明细
+| 对象 | SQL 列 | SQL 类型 | → aPaaS 类型 | api_name | 说明 |
+|---|---|---|---|---|---|
+| customer | id | INT PK | — | — | 忽略（用系统 _id） |
+| customer | name | VARCHAR(100) NOT NULL | text | name | required: true, max_length: 100 |
+| customer | email | VARCHAR(200) | email | email | 语义识别为 email 类型 |
+| customer | status | ENUM('active','inactive') | enum | status | 2 个选项 |
+| order | customer_id | INT FK→customer | lookup | customer | 关联客户 |
+| order | total | DECIMAL(10,2) | decimal | total | decimal_places: 2 |
+
+### 需要确认的项
+- [ ] customer.email: 推断为 `email` 类型，是否正确？还是保持 `text`？
+- [ ] customer_tag 识别为中间表，是否正确？如果该表有额外业务字段请告知
+- [ ] enum 选项的中文标签是否准确？
+
+请确认或修改后，我将按照三阶段创建法执行。
+```
+
+**第三步：用户确认后执行**
+
+用户确认后，按「多对象依赖分析与分阶段创建」章节的流程执行（1a 空壳 → 1b 基础字段 → 2 lookup → 3 reference_field）。
+
+### 不可转换的 SQL 特性
+
+以下 SQL 特性在 aPaaS 中无直接对应，需告知用户：
+
+| SQL 特性 | aPaaS 处理方式 |
+|---|---|
+| 存储过程 / 触发器 | 不支持，需用应用逻辑实现 |
+| 视图（VIEW） | 不支持，忽略 |
+| 复合主键 | 不支持，aPaaS 用 `_id` 单列主键 |
+| 复合唯一约束（多列联合） | 不支持单字段级 `unique` 无法表达联合唯一 |
+| CHECK 约束 | 不直接支持，需在应用层校验 |
+| 分区表 | 不支持，忽略 |
+| 自定义函数 / 计算列 | 不支持 |
+
+遇到这些特性时，在转换确认表中标注"⚠️ 不支持"并给出替代建议（如果有的话）。
 
 ## 多对象依赖分析与分阶段创建（核心策略）
 
@@ -363,69 +508,42 @@ await client.schema.update({
 清理环境或重建数据模型时，需要删除应用内所有自定义对象。流程如下：
 
 ```typescript
-// 步骤 1：获取所有对象
+// 步骤 1：获取所有自定义对象（_ 开头为系统预置，不可删除）
 const allObjects = await client.object.listWithIterator();
-// 过滤掉系统预置对象（_ 开头的不可删除）
 const customObjects = allObjects.items.filter(o => !o.apiName.startsWith('_'));
+if (customObjects.length === 0) return;
 
-if (customObjects.length === 0) {
-    console.log('没有自定义对象，无需删除');
-    return;
-}
-
-// 步骤 2：获取每个对象的字段，按类型分类
-const referenceFields: { object: string; field: string }[] = [];
-const lookupFields: { object: string; field: string }[] = [];
-
+// 步骤 2：收集依赖字段
+const fieldsByType: Record<string, { object: string; field: string }[]> = { referenceField: [], lookup: [] };
 for (const obj of customObjects) {
     const result = await client.object.metadata.fields({ object_name: obj.apiName });
     for (const field of result.data?.fields || []) {
-        // 跳过系统字段（_ 开头）
         if (field.apiName.startsWith('_')) continue;
-        if (field.type?.name === 'referenceField' || field.type === 'referenceField') {
-            referenceFields.push({ object: obj.apiName, field: field.apiName });
-        } else if (field.type?.name === 'lookup' || field.type === 'lookup') {
-            lookupFields.push({ object: obj.apiName, field: field.apiName });
+        const typeName = field.type?.name || field.type;
+        if (typeName === 'referenceField' || typeName === 'lookup') {
+            fieldsByType[typeName].push({ object: obj.apiName, field: field.apiName });
         }
     }
 }
 
-// 步骤 3a：先删 reference_field
-if (referenceFields.length > 0) {
-    // 按对象分组
+// 步骤 3：按依赖顺序删字段（reference_field → lookup）
+for (const typeName of ['referenceField', 'lookup']) {
+    const items = fieldsByType[typeName];
+    if (items.length === 0) continue;
     const grouped: Record<string, { operator: 'remove'; api_name: string }[]> = {};
-    for (const rf of referenceFields) {
-        (grouped[rf.object] ??= []).push({ operator: 'remove', api_name: rf.field });
+    for (const { object, field } of items) {
+        (grouped[object] ??= []).push({ operator: 'remove', api_name: field });
     }
     await client.schema.update({
         objects: Object.entries(grouped).map(([api_name, fields]) => ({ api_name, fields }))
     });
-    console.log(`已删除 ${referenceFields.length} 个 reference_field`);
-}
-
-// 步骤 3b：再删 lookup
-if (lookupFields.length > 0) {
-    const grouped: Record<string, { operator: 'remove'; api_name: string }[]> = {};
-    for (const lf of lookupFields) {
-        (grouped[lf.object] ??= []).push({ operator: 'remove', api_name: lf.field });
-    }
-    await client.schema.update({
-        objects: Object.entries(grouped).map(([api_name, fields]) => ({ api_name, fields }))
-    });
-    console.log(`已删除 ${lookupFields.length} 个 lookup`);
 }
 
 // 步骤 4：删除所有对象
-const apiNames = customObjects.map(o => o.apiName);
-await client.schema.delete({ api_names: apiNames });
-console.log(`已删除对象: ${apiNames.join(', ')}`);
+await client.schema.delete({ api_names: customObjects.map(o => o.apiName) });
 ```
 
-**注意事项**：
-- `_user`、`_department` 等系统对象不可删除，必须过滤
-- 系统字段（`_` 开头）不可删除，只处理自定义字段
-- 如果 lookup 互相引用，不先删 lookup 就直接删对象可能失败
-- 建议删除后用 `client.object.listWithIterator()` 验证是否清理干净
+> 删除后建议用 `verifyObjects()` 或 `client.object.listWithIterator()` 确认清理干净。
 
 ### 约束速记
 
@@ -498,80 +616,34 @@ if (failed.length > 0) {
 
 ## 响应验证
 
-响应有**三种状态**，必须全部检查：
+每次 API 调用后必须检查**三层状态**：
 
-```typescript
-const result = await client.schema.update({ objects: [...] });
+1. **`result.code !== '0'`** — 请求级错误（参数格式问题）
+2. **`result.code === '0' && result.data === null`** — ⚠️ **静默失败**（最危险：看起来成功，但字段未创建。原因：settings 缺必填项）
+3. **`result.data.items[].status.code !== '0'`** — 单个对象级错误
 
-// 1. 顶层 code≠"0"：请求级错误（参数格式问题）
-if (result.code !== '0') {
-    console.error('请求失败:', result.msg);
-}
+> 上述三层检查已封装在 `scripts/run.ts` 的 `checkResponse(result, context)` 函数中，直接调用即可。
 
-// 2. ⚠️ code="0" 但 data=null：静默失败（字段 settings 缺必填项）
-// 这是最危险的情况！看起来成功，但字段没有被创建。
-if (result.code === '0' && result.data === null) {
-    console.error('⚠️ 静默失败：code=0 但 data=null，字段可能未创建。检查 settings 是否完整（text 必须有 multiline，auto_number 必须有 generation_method）');
-}
+## 创建后验证
 
-// 3. data.items 存在：逐项检查
-for (const item of result.data?.items || []) {
-    if (item.status?.code && item.status.code !== '0') {
-        console.error(`对象 ${item.api_name} 失败:`, item.status.message);
-    }
-}
-```
+创建/更新对象后，调用 `scripts/run.ts` 的 `verifyObjects(['product', ...])` 验证：自动检查对象是否存在、列出自定义字段及类型、导出 Markdown 供人工审查。
 
-## 创建后验证工作流
-
-创建/更新对象后，建议验证：
-
-```typescript
-// 1. 列出对象，确认存在
-const objects = await client.object.listWithIterator();
-const found = objects.items.find(o => o.apiName === 'product');
-
-// 2. 获取字段元数据，验证字段定义（字段在 result.data.fields 中）
-const fieldResult = await client.object.metadata.fields({ object_name: 'product' });
-const fields = fieldResult.data?.fields || [];
-
-// 3. 导出 Markdown，便于人工审查
-const md = await client.object.metadata.export2markdown({ object_names: ['product'] });
-console.log(md);
-```
-
-## 执行脚本
-
-`scripts/run.ts` 用于快速执行 schema 操作：
+## 执行脚本与目录结构
 
 ```bash
-# 1. 安装依赖
-npm install
-
-# 2. 配置凭据（格式见"前置条件"）
-cp scripts/.env.example scripts/.env
-# 编辑 scripts/.env 填入真实值
-
-# 3. 在 scripts/run.ts 的 main() 中编写操作，然后执行
+npm install && cp scripts/.env.example scripts/.env  # 填入凭据后执行：
 npx ts-node scripts/run.ts
 ```
 
-脚本自动从 `.env` 读取凭据、初始化 client、执行操作。内置 `verifyObjects()` 函数用于创建后验证。
-
-## 目录结构
+`scripts/run.ts` 自动加载凭据、初始化 client，内置工具函数：`checkResponse()`（三层响应验证）、`batchExecute()`（自动分批）、`verifyObjects()`（字段级验证）。
 
 ```
 apaas-object-skill/
   SKILL.md                          # 主文档（Claude 读取此文件）
-  LICENSE.txt                       # ISC 协议
   references/
-    FIELD_SCHEMA_RULES.md           # 字段类型映射、依赖规则（人读版）
-    field-schema-rules.ts           # 字段类型映射、依赖规则（机器可读版，TypeScript）
+    FIELD_SCHEMA_RULES.md           # 字段类型映射与规则（人读版）
+    field-schema-rules.ts           # 字段类型映射与规则（机器可读版，含 SQL 转换规则）
   scripts/
     run.ts                          # 执行脚本（凭据加载、client 初始化、工具函数）
     .env.example                    # 凭据配置模板
 ```
-
-## 其他参考
-
-- 字段规则 TypeScript 定义（机器可读源）：本仓库 `references/field-schema-rules.ts`
