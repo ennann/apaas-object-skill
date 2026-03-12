@@ -156,7 +156,7 @@ export const FIELD_SCHEMA_RULES: FieldCreateRule[] = [
         settingsExample: {
             required: false,
             multiple: false,
-            option_source: 'custom',
+            option_type: 'custom',
             global_option_api_name: '',
             options: [
                 {
