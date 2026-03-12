@@ -1,11 +1,25 @@
 ---
 name: apaas-object-skill
-description: Use when managing aPaaS platform data objects via the apaas-oapi-client Node SDK (client.schema.create/update/delete), or when converting relational database designs (MySQL, PostgreSQL, SQLite DDL, ER diagrams) to aPaaS objects.
+description: "Use when creating, updating, or deleting aPaaS data objects (schemas/tables), managing field definitions, or troubleshooting schema API errors like type mismatches, missing fields, or dependency ordering issues."
 ---
 
 # aPaaS 数据对象管理
 
 管理 aPaaS 平台数据对象（表）的创建、更新、删除。通过 Node SDK 的 `client.schema.*` 接口操作。
+
+## 快速导航
+
+[必读陷阱](#必读陷阱清单) | [前置条件](#前置条件) | [核心 API](#核心-api) | [创建对象（两步走）](#创建对象两步走必须遵守) | [字段类型映射](#字段类型映射关键陷阱) | [字段 settings 模板](#各字段类型-settings-模板必须遵守) | [SQL 转换](#从关系型数据库设计转换为-apaas-对象) | [多对象分阶段创建](#多对象依赖分析与分阶段创建核心策略) | [错误处理](#常见错误与对策) | [完整示例](#端到端完整示例)
+
+## 必读陷阱清单
+
+> **先看完这 5 条再动手，每条都是真实踩坑总结。**
+
+1. **`schema.create` 静默忽略 fields** — 传了字段定义也返回成功，但字段不会被创建。**必须两步走**：先 create 空壳，再 update 添加字段。
+2. **`text`/`multilingual` 缺 `multiline` = 整批静默失败** — API 返回 `code: "0"` + `data: null`，看似成功但所有字段都没创建。始终用完整 settings 模板。
+3. **metadata type ≠ schema type** — `number` 要写 `float`，`option` 要写 `enum`，`file` 要写 `attachment`。用错直接报类型不识别。
+4. **系统字段 `_id`/`_createdBy` 等不能手动创建** — 新建对象自动生成 5 个系统字段，重复定义会冲突报错。
+5. **批量上限 10 个对象** — `schema.create/update/delete` 每次最多 10 个，超过需分批。
 
 ## 前置条件
 
@@ -647,3 +661,118 @@ apaas-object-skill/
     run.ts                          # 执行脚本（凭据加载、client 初始化、工具函数）
     .env.example                    # 凭据配置模板
 ```
+
+## 端到端完整示例
+
+以下示例演示从 SQL DDL 到 aPaaS 对象的完整流程：
+
+```sql
+-- 输入：用户提供的 SQL 设计
+CREATE TABLE customer (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(100) NOT NULL,
+  email VARCHAR(200),
+  status ENUM('active', 'inactive') DEFAULT 'active'
+);
+
+CREATE TABLE `order` (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  order_no VARCHAR(50) NOT NULL UNIQUE,
+  customer_id INT REFERENCES customer(id),
+  total DECIMAL(10,2),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+```typescript
+// ===== 阶段 1a：创建空壳对象 =====
+await client.schema.create({
+    objects: [
+        { api_name: 'customer', label: { zh_cn: '客户', en_us: 'Customer' },
+          settings: { display_name: '_id', allow_search_fields: ['_id'], search_layout: [] } },
+        { api_name: 'order', label: { zh_cn: '订单', en_us: 'Order' },
+          settings: { display_name: '_id', allow_search_fields: ['_id'], search_layout: [] } }
+    ]
+});
+
+// ===== 阶段 1b：添加基础字段 =====
+await client.schema.update({
+    objects: [
+        { api_name: 'customer', fields: [
+            { operator: 'add', api_name: 'name',
+              label: { zh_cn: '客户名称', en_us: 'Name' },
+              type: { name: 'text', settings: { required: true, unique: false, case_sensitive: false, multiline: false, max_length: 100 } },
+              encrypt_type: 'none' },
+            { operator: 'add', api_name: 'email',
+              label: { zh_cn: '邮箱', en_us: 'Email' },
+              type: { name: 'email', settings: { required: false, unique: false } },
+              encrypt_type: 'none' },
+            { operator: 'add', api_name: 'status',
+              label: { zh_cn: '状态', en_us: 'Status' },
+              type: { name: 'enum', settings: {
+                  required: false, multiple: false, option_type: 'custom',
+                  options: [
+                      { label: { zh_cn: '活跃', en_us: 'Active' }, api_name: 'active', color: 'green', active: true },
+                      { label: { zh_cn: '停用', en_us: 'Inactive' }, api_name: 'inactive', color: 'grey', active: true }
+                  ]
+              } },
+              encrypt_type: 'none' }
+        ]},
+        { api_name: 'order', fields: [
+            { operator: 'add', api_name: 'order_no',
+              label: { zh_cn: '订单号', en_us: 'Order No' },
+              type: { name: 'text', settings: { required: true, unique: true, case_sensitive: false, multiline: false, max_length: 50 } },
+              encrypt_type: 'none' },
+            { operator: 'add', api_name: 'total',
+              label: { zh_cn: '合计', en_us: 'Total' },
+              type: { name: 'decimal', settings: { required: false, unique: false, display_as_percentage: false, decimal_places: 2 } },
+              encrypt_type: 'none' }
+            // created_at → 忽略，系统自动生成 _createdAt
+        ]}
+    ]
+});
+
+// ===== 阶段 2：添加 lookup =====
+await client.schema.update({
+    objects: [
+        { api_name: 'order', fields: [
+            { operator: 'add', api_name: 'customer',
+              label: { zh_cn: '客户', en_us: 'Customer' },
+              type: { name: 'lookup', settings: { required: false, multiple: false, referenced_object_api_name: 'customer' } },
+              encrypt_type: 'none' }
+        ]}
+    ]
+});
+
+// ===== 阶段 3 (可选)：添加 reference_field =====
+await client.schema.update({
+    objects: [
+        { api_name: 'order', fields: [
+            { operator: 'add', api_name: 'customer_name',
+              label: { zh_cn: '客户名称', en_us: 'Customer Name' },
+              type: { name: 'reference_field', settings: {
+                  current_lookup_field_api_name: 'customer',
+                  target_reference_field_api_name: 'name'
+              } },
+              encrypt_type: 'none' }
+        ]}
+    ]
+});
+
+// ===== 更新 display_name =====
+await client.schema.update({
+    objects: [
+        { api_name: 'customer', settings: { display_name: 'name' } },
+        { api_name: 'order', settings: { display_name: 'order_no' } }
+    ]
+});
+
+// ===== 验证 =====
+await verifyObjects(['customer', 'order']);
+```
+
+**转换要点**：
+- `id INT PRIMARY KEY` → 忽略，aPaaS 用 `_id`
+- `created_at DATETIME` → 忽略，aPaaS 用 `_createdAt`
+- `customer_id INT FK` → lookup 字段
+- `VARCHAR(200)` 列名含 email → 语义识别为 `email` 类型
